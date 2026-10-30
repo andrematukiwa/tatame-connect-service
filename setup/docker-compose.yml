@@ -1,0 +1,97 @@
+# Nome fixo do projeto: sem isso, o Docker Compose usa o nome da pasta ("setup") como
+# nome do projeto, e isso colide com qualquer outro projeto que tambem tenha uma pasta
+# "setup" (ex: dkm-sports-service) - containers e volumes de projetos diferentes acabam
+# sendo tratados como o mesmo projeto e um "docker compose up" pode recriar/substituir
+# os containers do outro projeto sem avisar.
+name: tatame-connect-service
+
+services:
+  postgresql:
+    image: postgres:16-alpine
+    container_name: tatame-postgresql
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=root
+      - POSTGRES_PASSWORD=root
+      - POSTGRES_DB=tatame
+    volumes:
+      - ./db/dumps:/docker-entrypoint-initdb.d/
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U root -d tatame"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - tatame-network
+
+  # MinIO exige login pra baixar a imagem desde 2025, então o storage S3-compatible
+  # local usa LocalStack (gratuito, sem login) - mesma ferramenta que o dkm-register-service
+  # já usa localmente pro Secrets Manager.
+  localstack:
+    # :latest hoje exige LOCALSTACK_AUTH_TOKEN (virou imagem Pro); 3.0 e a ultima tag
+    # da edicao community que roda sem licenca.
+    image: localstack/localstack:3.0
+    container_name: tatame-localstack
+    environment:
+      - SERVICES=s3
+      - DEFAULT_REGION=us-east-1
+    ports:
+      - "4566:4566"
+    volumes:
+      - localstack-data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - tatame-network
+
+  localstack-init:
+    image: amazon/aws-cli:latest
+    container_name: tatame-localstack-init
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+    entrypoint: ["sh", "-c", "aws --endpoint-url=http://localstack:4566 s3 mb s3://tatame-photos || true"]
+    networks:
+      - tatame-network
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: tatame-rabbitmq
+    hostname: tatame-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=root
+      - RABBITMQ_DEFAULT_PASS=root
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - tatame-network
+
+networks:
+  tatame-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  localstack-data:
+  rabbitmq-data:
